@@ -35,6 +35,7 @@ class Extractor : ModInitializer {
             InputControlType(),
             Advancement(),
             Effect(),
+            SpawnEgg(),
             PotionBrewing(),
             Potion(),
             Sounds(),
@@ -55,7 +56,6 @@ class Extractor : ModInitializer {
             EntityPose(),
             GameEvent(),
             GameRules(),
-            SpawnEgg(),
             SyncedRegistries(),
             ChunkGenSetting(),
             Packets(),
@@ -86,7 +86,7 @@ class Extractor : ModInitializer {
             FlowerPotTransformation(),
             Fuels(),
             RecipeRemainder(),
-            ChunkDumpTests.NoiseDump(
+         /*   ChunkDumpTests.NoiseDump(
                 "no_blend_no_beard_0_0.chunk",
                 0,
                 0,
@@ -163,7 +163,7 @@ class Extractor : ModInitializer {
             ChunkDumpTests.SurfaceDump("no_blend_no_beard_surface_frozen_ocean_-119_183.chunk", 0, -119, 183),
             ChunkDumpTests.SurfaceDump("no_blend_no_beard_surface_13579_-6_11.chunk", 13579, -6, 11),
             ChunkDumpTests.SurfaceDump("no_blend_no_beard_surface_13579_-2_15.chunk", 13579, -2, 15),
-            ChunkDumpTests.SurfaceDump("no_blend_no_beard_surface_13579_-7_9.chunk", 13579, -7, 9)
+            ChunkDumpTests.SurfaceDump("no_blend_no_beard_surface_13579_-7_9.chunk", 13579, -7, 9)*/
         )
 
         val outputDirectory: Path
@@ -191,7 +191,6 @@ class Extractor : ModInitializer {
                 }
             }
             logger.info("Done, took ${timeInMillis}ms")
-            server.stop(false)
         })
     }
 

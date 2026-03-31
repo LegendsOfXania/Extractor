@@ -4,10 +4,9 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
-import net.minecraft.registry.RegistryKeys
-import net.minecraft.registry.RegistryOps
+import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
-import net.minecraft.world.gen.carver.ConfiguredCarver
+import net.minecraft.world.level.levelgen.carver.ConfiguredWorldCarver
 
 class Carver : Extractor.Extractor {
     override fun fileName(): String {
@@ -16,15 +15,23 @@ class Carver : Extractor.Extractor {
 
     override fun extract(server: MinecraftServer): JsonElement {
         val finalJson = JsonObject()
-        val registry =
-            server.registryManager.getOrThrow(RegistryKeys.CONFIGURED_CARVER)
-        for (setting in registry) {
+
+        val registry = server.registryAccess().lookupOrThrow(Registries.CONFIGURED_CARVER)
+
+        val ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE)
+
+        registry.listElements().forEach { holder ->
+            val carver = holder.value()
+            val key = holder.key()
+
+            val json = ConfiguredWorldCarver.DIRECT_CODEC.encodeStart(
+                ops,
+                carver
+            ).getOrThrow()
+
             finalJson.add(
-                registry.getId(setting)!!.path,
-                ConfiguredCarver.CODEC.encodeStart(
-                    RegistryOps.of(JsonOps.INSTANCE, server.registryManager),
-                    setting
-                ).getOrThrow()
+                key.identifier().path,
+                json
             )
         }
 

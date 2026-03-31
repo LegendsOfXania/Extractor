@@ -5,18 +5,19 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
-import net.minecraft.block.Block
-import net.minecraft.block.ExperienceDroppingBlock
-import net.minecraft.block.SideShapeType
-import net.minecraft.loot.LootTable
-import net.minecraft.registry.Registries
-import net.minecraft.registry.RegistryKey
-import net.minecraft.registry.RegistryOps
+import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
+import net.minecraft.core.Holder
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.server.MinecraftServer
-import net.minecraft.util.math.BlockPos
-import net.minecraft.util.math.Box
-import net.minecraft.util.math.Direction;
-import net.minecraft.world.EmptyBlockView
+import net.minecraft.world.level.EmptyBlockGetter
+import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.DropExperienceBlock
+import net.minecraft.world.level.block.FireBlock
+import net.minecraft.world.level.block.SupportType
+import net.minecraft.world.level.storage.loot.LootTable
+import net.minecraft.world.phys.AABB
 import java.util.*
 
 class Blocks : Extractor.Extractor {
@@ -33,57 +34,52 @@ class Blocks : Extractor.Extractor {
         private const val IS_SOLID_BLOCK    : Int = 1 shl 8
         private const val HAS_RANDOM_TICKS  : Int = 1 shl 9
 
-        private const val DOWN_SIDE_SOLID   : Int = 1 shl 0;
-        private const val UP_SIDE_SOLID     : Int = 1 shl 1;
-        private const val NORTH_SIDE_SOLID  : Int = 1 shl 2;
-        private const val SOUTH_SIDE_SOLID  : Int = 1 shl 3;
-        private const val WEST_SIDE_SOLID   : Int = 1 shl 4;
-        private const val EAST_SIDE_SOLID   : Int = 1 shl 5;
-        private const val DOWN_CENTER_SOLID : Int = 1 shl 6;
-        private const val UP_CENTER_SOLID   : Int = 1 shl 7;
+        private const val DOWN_SIDE_SOLID   : Int = 1 shl 0
+        private const val UP_SIDE_SOLID     : Int = 1 shl 1
+        private const val NORTH_SIDE_SOLID  : Int = 1 shl 2
+        private const val SOUTH_SIDE_SOLID  : Int = 1 shl 3
+        private const val WEST_SIDE_SOLID   : Int = 1 shl 4
+        private const val EAST_SIDE_SOLID   : Int = 1 shl 5
+        private const val DOWN_CENTER_SOLID : Int = 1 shl 6
+        private const val UP_CENTER_SOLID   : Int = 1 shl 7
     }
 
-    override fun fileName(): String {
-        return "blocks.json"
-    }
+    override fun fileName(): String = "blocks.json"
 
     private fun getFlammableData(): Map<Block, Pair<Int, Int>> {
         val flammableData = mutableMapOf<Block, Pair<Int, Int>>()
-        val fireBlock = net.minecraft.block.Blocks.FIRE as net.minecraft.block.FireBlock;
-        for (block in Registries.BLOCK) {
-            val defaultState = block.defaultState
-            val spreadChance = fireBlock.getSpreadChance(defaultState)
-            val burnChance = fireBlock.getBurnChance(defaultState)
+        val fireBlock = Blocks.FIRE as FireBlock
+        for (block in BuiltInRegistries.BLOCK) {
+            val defaultState = block.defaultBlockState()
+            val spreadChance = fireBlock.getIgniteOdds(defaultState)
+            val burnChance = fireBlock.getBurnOdds(defaultState)
             if (spreadChance > 0 || burnChance > 0) {
                 flammableData[block] = Pair(spreadChance, burnChance)
             }
         }
-
         return flammableData
     }
 
     override fun extract(server: MinecraftServer): JsonElement {
         val topLevelJson = JsonObject()
-
         val blocksJson = JsonArray()
-
-        val shapes: LinkedHashMap<Box, Int> = LinkedHashMap()
-
+        val shapes: LinkedHashMap<AABB, Int> = LinkedHashMap()
         val flammableData = getFlammableData()
 
-        for (block in Registries.BLOCK) {
+        for (block in BuiltInRegistries.BLOCK) {
             val blockJson = JsonObject()
-            blockJson.addProperty("id", Registries.BLOCK.getRawId(block))
-            blockJson.addProperty("name", Registries.BLOCK.getId(block).path)
-            blockJson.addProperty("translation_key", block.translationKey)
-            blockJson.addProperty("slipperiness", block.slipperiness)
-            blockJson.addProperty("velocity_multiplier", block.velocityMultiplier)
-            blockJson.addProperty("jump_velocity_multiplier", block.jumpVelocityMultiplier)
-            blockJson.addProperty("hardness", block.hardness)
-            blockJson.addProperty("blast_resistance", block.blastResistance)
-            blockJson.addProperty("item_id", Registries.ITEM.getRawId(block.asItem()))
+            val blockId = BuiltInRegistries.BLOCK.getKey(block)
 
-            // Add flammable data if this block is flammable
+            blockJson.addProperty("id", BuiltInRegistries.BLOCK.getId(block))
+            blockJson.addProperty("name", blockId.path)
+            blockJson.addProperty("translation_key", block.descriptionId)
+            blockJson.addProperty("slipperiness", block.friction)
+            blockJson.addProperty("velocity_multiplier", block.speedFactor)
+            blockJson.addProperty("jump_velocity_multiplier", block.jumpFactor)
+            blockJson.addProperty("hardness", block.defaultBlockState().getDestroySpeed(EmptyBlockGetter.INSTANCE, BlockPos.ZERO))
+            blockJson.addProperty("blast_resistance", block.explosionResistance)
+            blockJson.addProperty("item_id", BuiltInRegistries.ITEM.getId(block.asItem()))
+
             flammableData[block]?.let { (spreadChance, burnChance) ->
                 val flammableJson = JsonObject()
                 flammableJson.addProperty("spread_chance", spreadChance)
@@ -91,119 +87,110 @@ class Blocks : Extractor.Extractor {
                 blockJson.add("flammable", flammableJson)
             }
 
-            if (block is ExperienceDroppingBlock) {
+            if (block is DropExperienceBlock) {
+                blockJson.add("experience", DropExperienceBlock.CODEC.codec().encodeStart(JsonOps.INSTANCE, block).getOrThrow())
+            }
+
+            block.lootTable.ifPresent { key ->
+                val table = server.reloadableRegistries().getLootTable(key)
+
+                val ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE)
+
                 blockJson.add(
-                    "experience", ExperienceDroppingBlock.CODEC.codec().encodeStart(
-                        RegistryOps.of(JsonOps.INSTANCE, server.registryManager),
-                        block,
-                    ).getOrThrow()
+                    "loot_table",
+                    LootTable.DIRECT_CODEC.encodeStart(ops, table).getOrThrow()
                 )
             }
-            if (block.lootTableKey.isPresent) {
-                val table = server.reloadableRegistries
-                    .getLootTable(block.lootTableKey.get() as RegistryKey<LootTable?>)
-                blockJson.add(
-                    "loot_table", LootTable::CODEC.get().encodeStart(
-                        RegistryOps.of(JsonOps.INSTANCE, server.registryManager),
-                        table
-                    ).getOrThrow()
-                )
-            }
+
             val propsJson = JsonArray()
-            for (prop in block.stateManager.properties) {
-                // Use the hashcode to map to a property later; the property names are not unique
+            for (prop in block.stateDefinition.properties) {
                 propsJson.add(prop.hashCode())
             }
             blockJson.add("properties", propsJson)
 
             val statesJson = JsonArray()
-            for (state in block.stateManager.states) {
+            for (state in block.stateDefinition.getPossibleStates()) {
                 val stateJson = JsonObject()
                 var stateFlags = 0
                 var sideFlags = 0
-                
+
                 if (state.isAir) stateFlags = stateFlags or AIR
-                if (state.isBurnable) stateFlags = stateFlags or BURNABLE
-                if (state.isToolRequired) stateFlags = stateFlags or TOOL_REQUIRED
-                if (state.hasSidedTransparency()) stateFlags = stateFlags or SIDED_TRANSPARENCY
-                if (state.isReplaceable) stateFlags = stateFlags or REPLACEABLE
-                if (state.isLiquid) stateFlags = stateFlags or IS_LIQUID
-                if (state.isSolid) stateFlags = stateFlags or IS_SOLID
-                if (state.isFullCube(EmptyBlockView.INSTANCE, BlockPos.ORIGIN)) stateFlags = stateFlags or IS_FULL_CUBE
-                if (state.isSolidBlock(EmptyBlockView.INSTANCE, BlockPos.ORIGIN)) stateFlags = stateFlags or IS_SOLID_BLOCK
-                if (state.hasRandomTicks()) stateFlags = stateFlags or HAS_RANDOM_TICKS
+                if (state.ignitedByLava()) stateFlags = stateFlags or BURNABLE
+                if (state.requiresCorrectToolForDrops()) stateFlags = stateFlags or TOOL_REQUIRED
+                // ?, not sure if this is right
+                if (state.propagatesSkylightDown()) stateFlags = stateFlags or SIDED_TRANSPARENCY
+                if (state.canBeReplaced()) stateFlags = stateFlags or REPLACEABLE
+                if (!state.fluidState.isEmpty) stateFlags = stateFlags or IS_LIQUID
+                if (state.blocksMotion()) stateFlags = stateFlags or IS_SOLID
+                if (state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO)) stateFlags = stateFlags or IS_FULL_CUBE
+                if (state.isRedstoneConductor(EmptyBlockGetter.INSTANCE, BlockPos.ZERO)) stateFlags = stateFlags or IS_SOLID_BLOCK
+                if (state.isRandomlyTicking) stateFlags = stateFlags or HAS_RANDOM_TICKS
 
+                Direction.entries.forEach { dir ->
+                    if (state.isFaceSturdy(EmptyBlockGetter.INSTANCE, BlockPos.ZERO, dir)) {
+                        sideFlags = when(dir) {
+                            Direction.DOWN -> sideFlags or DOWN_SIDE_SOLID
+                            Direction.UP -> sideFlags or UP_SIDE_SOLID
+                            Direction.NORTH -> sideFlags or NORTH_SIDE_SOLID
+                            Direction.SOUTH -> sideFlags or SOUTH_SIDE_SOLID
+                            Direction.WEST -> sideFlags or WEST_SIDE_SOLID
+                            Direction.EAST -> sideFlags or EAST_SIDE_SOLID
+                        }
+                    }
+                }
 
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.DOWN)) sideFlags = sideFlags or DOWN_SIDE_SOLID
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.UP)) sideFlags = sideFlags or UP_SIDE_SOLID
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.NORTH)) sideFlags = sideFlags or NORTH_SIDE_SOLID
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.SOUTH)) sideFlags = sideFlags or SOUTH_SIDE_SOLID
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.WEST)) sideFlags = sideFlags or WEST_SIDE_SOLID
-                if (state.isSideSolidFullSquare(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.EAST)) sideFlags = sideFlags or EAST_SIDE_SOLID
-                if (state.isSideSolid(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.DOWN, SideShapeType.CENTER)) sideFlags = sideFlags or DOWN_CENTER_SOLID
-                if (state.isSideSolid(EmptyBlockView.INSTANCE, BlockPos.ORIGIN, Direction.UP, SideShapeType.CENTER)) sideFlags = sideFlags or UP_CENTER_SOLID
-                
-                stateJson.addProperty("id", Block.getRawIdFromState(state))
+                if (state.isFaceSturdy(EmptyBlockGetter.INSTANCE, BlockPos.ZERO, Direction.DOWN, SupportType.CENTER)) sideFlags = sideFlags or DOWN_CENTER_SOLID
+                if (state.isFaceSturdy(EmptyBlockGetter.INSTANCE, BlockPos.ZERO, Direction.UP, SupportType.CENTER)) sideFlags = sideFlags or UP_CENTER_SOLID
+
+                stateJson.addProperty("id", Block.getId(state))
                 stateJson.addProperty("state_flags", stateFlags and 0xFFFF)
                 stateJson.addProperty("side_flags", sideFlags and 0xFF)
-                stateJson.addProperty("instrument", state.instrument.name)
-                stateJson.addProperty("luminance", state.luminance)
-                stateJson.addProperty("piston_behavior", state.pistonBehavior.name)
-                stateJson.addProperty("hardness", state.getHardness(null, null))
+                stateJson.addProperty("instrument", state.instrument().serializedName)
+                stateJson.addProperty("luminance", state.lightEmission)
+                stateJson.addProperty("piston_behavior", state.pistonPushReaction.name)
+                stateJson.addProperty("hardness", state.getDestroySpeed(EmptyBlockGetter.INSTANCE, BlockPos.ZERO))
+                stateJson.addProperty("opacity", state.lightDampening)
 
-                    stateJson.addProperty("opacity", state.opacity)
-
-                if (block.defaultState == state) {
-                    blockJson.addProperty("default_state_id", Block.getRawIdFromState(state))
+                if (block.defaultBlockState() == state) {
+                    blockJson.addProperty("default_state_id", Block.getId(state))
                 }
 
-                val collisionShapeIdxsJson = JsonArray()
-                for (box in state.getCollisionShape(EmptyBlockView.INSTANCE, BlockPos.ORIGIN).boundingBoxes) {
-                    val idx = shapes.putIfAbsent(box, shapes.size)
-                    collisionShapeIdxsJson.add(Objects.requireNonNullElseGet(idx) { shapes.size - 1 })
+                val collisionShapes = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).toAabbs()
+                val collisionIdxs = JsonArray()
+                for (box in collisionShapes) {
+                    collisionIdxs.add(shapes.getOrPut(box) { shapes.size })
                 }
+                stateJson.add("collision_shapes", collisionIdxs)
 
-                stateJson.add("collision_shapes", collisionShapeIdxsJson)
-
-                val outlineShapeIdxsJson = JsonArray()
-                for (box in state.getOutlineShape(EmptyBlockView.INSTANCE, BlockPos.ORIGIN).boundingBoxes) {
-                    val idx = shapes.putIfAbsent(box, shapes.size)
-                    outlineShapeIdxsJson.add(Objects.requireNonNullElseGet(idx) { shapes.size - 1 })
+                val outlineShapes = state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).toAabbs()
+                val outlineIdxs = JsonArray()
+                for (box in outlineShapes) {
+                    outlineIdxs.add(shapes.getOrPut(box) { shapes.size })
                 }
+                stateJson.add("outline_shapes", outlineIdxs)
 
-                stateJson.add("outline_shapes", outlineShapeIdxsJson)
-
-                for (blockEntity in Registries.BLOCK_ENTITY_TYPE) {
-                    if (blockEntity.supports(state)) {
-                        stateJson.addProperty("block_entity_type", Registries.BLOCK_ENTITY_TYPE.getRawId(blockEntity))
+                for (beType in BuiltInRegistries.BLOCK_ENTITY_TYPE) {
+                    if (beType.isValid(state)) {
+                        stateJson.addProperty("block_entity_type", BuiltInRegistries.BLOCK_ENTITY_TYPE.getId(beType))
                     }
                 }
 
                 statesJson.add(stateJson)
             }
             blockJson.add("states", statesJson)
-
             blocksJson.add(blockJson)
         }
 
         val blockEntitiesJson = JsonArray()
-        for (blockEntity in Registries.BLOCK_ENTITY_TYPE) {
-            blockEntitiesJson.add(Registries.BLOCK_ENTITY_TYPE.getId(blockEntity)!!.path)
+        BuiltInRegistries.BLOCK_ENTITY_TYPE.forEach { be ->
+            blockEntitiesJson.add(BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be)!!.path)
         }
 
         val shapesJson = JsonArray()
         for (shape in shapes.keys) {
             val shapeJson = JsonObject()
-            val min = JsonArray()
-            min.add(shape.minX)
-            min.add(shape.minY)
-            min.add(shape.minZ)
-            val max = JsonArray()
-            max.add(shape.maxX)
-            max.add(shape.maxY)
-            max.add(shape.maxZ)
-            shapeJson.add("min", min)
-            shapeJson.add("max", max)
+            shapeJson.add("min", JsonArray().apply { add(shape.minX); add(shape.minY); add(shape.minZ) })
+            shapeJson.add("max", JsonArray().apply { add(shape.maxX); add(shape.maxY); add(shape.maxZ) })
             shapesJson.add(shapeJson)
         }
 
@@ -212,5 +199,9 @@ class Blocks : Extractor.Extractor {
         topLevelJson.add("blocks", blocksJson)
 
         return topLevelJson
+    }
+
+    private fun <K, V> MutableMap<K, V>.getOrPut(key: K, defaultValue: () -> V): V {
+        return this[key] ?: defaultValue().also { this[key] = it }
     }
 }

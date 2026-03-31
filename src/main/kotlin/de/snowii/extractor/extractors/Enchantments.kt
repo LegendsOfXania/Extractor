@@ -4,10 +4,9 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
-import net.minecraft.enchantment.Enchantment
-import net.minecraft.registry.RegistryKeys
-import net.minecraft.registry.RegistryOps
+import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
+import net.minecraft.world.item.enchantment.Enchantment
 
 class Enchantments : Extractor.Extractor {
     override fun fileName(): String {
@@ -16,17 +15,28 @@ class Enchantments : Extractor.Extractor {
 
     override fun extract(server: MinecraftServer): JsonElement {
         val finalJson = JsonObject()
-        val registry =
-            server.registryManager.getOrThrow(RegistryKeys.ENCHANTMENT)
-        for (enchantment in registry) {
-            val sub = Enchantment.CODEC.encodeStart(
-                RegistryOps.of(JsonOps.INSTANCE, server.registryManager), enchantment
-            ).getOrThrow() as JsonObject
-            sub.addProperty("id", registry.getRawId(enchantment))
+
+        val registry = server.registryAccess().lookupOrThrow(Registries.ENCHANTMENT)
+
+        val ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE)
+
+        registry.listElements().forEach { holder ->
+            val enchantment = holder.value()
+            val key = holder.key()
+
+            val json = Enchantment.DIRECT_CODEC.encodeStart(
+                ops,
+                enchantment
+            ).getOrThrow().asJsonObject
+
+            json.addProperty("id", registry.getId(enchantment))
+
             finalJson.add(
-                registry.getId(enchantment)!!.toString(), sub
+                key.identifier().toString(),
+                json
             )
         }
+
         return finalJson
     }
 }

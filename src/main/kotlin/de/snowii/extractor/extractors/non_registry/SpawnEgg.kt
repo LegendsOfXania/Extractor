@@ -3,9 +3,10 @@ package de.snowii.extractor.extractors.non_registry
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import de.snowii.extractor.Extractor
-import net.minecraft.item.SpawnEggItem
-import net.minecraft.registry.Registries
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.server.MinecraftServer
+import net.minecraft.world.entity.EntityType
+import net.minecraft.world.item.SpawnEggItem
 
 class SpawnEgg : Extractor.Extractor {
     override fun fileName(): String {
@@ -15,11 +16,12 @@ class SpawnEgg : Extractor.Extractor {
     override fun extract(server: MinecraftServer): JsonElement {
         val eggJson = JsonObject()
 
-        for (spawnEggItem in SpawnEggItem.getAll()) {
-            val type = spawnEggItem.getEntityType(spawnEggItem.defaultStack)
+        for (spawnEggItem in BuiltInRegistries.ITEM) {
+            if (!BuiltInRegistries.ITEM.getKey(spawnEggItem).path.endsWith("_spawn_egg")) continue;
+            val type = SpawnEggItem.getType(spawnEggItem.defaultInstance);
             eggJson.addProperty(
-                Registries.ITEM.getRawId(spawnEggItem).toString(),
-                Registries.ENTITY_TYPE.getId(type).path
+                BuiltInRegistries.ITEM.getId(spawnEggItem).toString(),
+                EntityType.getKey(type!!).path
             )
         }
         return eggJson

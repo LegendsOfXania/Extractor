@@ -4,211 +4,145 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import de.snowii.extractor.Extractor
-import net.minecraft.registry.BuiltinRegistries
-import net.minecraft.registry.DynamicRegistryManager
-import net.minecraft.registry.Registry
-import net.minecraft.registry.RegistryKeys
-import net.minecraft.registry.entry.RegistryEntry
+import net.minecraft.core.Holder
+import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
-import net.minecraft.util.math.ChunkPos
-import net.minecraft.world.biome.Biome
-import net.minecraft.world.biome.source.MultiNoiseBiomeSource
-import net.minecraft.world.biome.source.MultiNoiseBiomeSourceParameterList
-import net.minecraft.world.biome.source.MultiNoiseBiomeSourceParameterLists
-import net.minecraft.world.biome.source.util.MultiNoiseUtil.*
-import net.minecraft.world.gen.chunk.Blender
-import net.minecraft.world.gen.chunk.ChunkGeneratorSettings
-import net.minecraft.world.gen.chunk.ChunkNoiseSampler
-import net.minecraft.world.gen.chunk.GenerationShapeConfig
-import net.minecraft.world.gen.densityfunction.DensityFunction.EachApplier
-import net.minecraft.world.gen.densityfunction.DensityFunction.NoisePos
-import net.minecraft.world.gen.densityfunction.DensityFunctionTypes
-import net.minecraft.world.gen.noise.NoiseConfig
-import java.lang.reflect.Field
-import java.lang.reflect.Method
-import kotlin.reflect.KFunction
-import kotlin.reflect.full.declaredFunctions
+import net.minecraft.world.level.biome.Biome
+import net.minecraft.world.level.biome.Climate
+import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings
+import net.minecraft.world.level.levelgen.RandomState
 
-/**
- * An extractor for MultiNoiseBiomeSourceParameterList that fully serializes NoiseHypercube and ParameterRange data.
- */
 class MultiNoise : Extractor.Extractor {
 
-    override fun fileName(): String {
-        return "multi_noise_biome_tree.json"
-    }
+    override fun fileName(): String = "multi_noise_biome_tree.json"
 
     fun extract_tree_node(node: Any?): JsonObject {
         val json = JsonObject()
-        for (f: Field in node!!::class.java.fields) {
-            if (f.name == "parameters") {
-                f.trySetAccessible()
-                val parameters = JsonArray()
-                val ranges = f.get(node) as Array<ParameterRange>
+        if (node == null) return json
+
+        val clazz = node.javaClass
+
+        // "parameterSpace" is declared on the abstract Node base class, so we walk up
+        fun findField(c: Class<*>, name: String): java.lang.reflect.Field? {
+            var cur: Class<*>? = c
+            while (cur != null) {
+                try { return cur.getDeclaredField(name).also { it.isAccessible = true } }
+                catch (_: NoSuchFieldException) { cur = cur.superclass }
+            }
+            return null
+        }
+
+        // Extract parameterSpace — present on both Leaf and SubTree via Node base class
+        val parameters = JsonArray()
+        findField(clazz, "parameterSpace")?.let { f ->
+            try {
+                @Suppress("UNCHECKED_CAST")
+                val ranges = f.get(node) as Array<Climate.Parameter>
                 for (range in ranges) {
                     val parameter = JsonObject()
-                    parameter.addProperty("min", range.min)
-                    parameter.addProperty("max", range.max)
+                    // min/max are quantized longs — convert back to float with unquantizeCoord
+                    parameter.addProperty("min", range.min())
+                    parameter.addProperty("max", range.max())
                     parameters.add(parameter)
                 }
-                json.add("parameters", parameters)
-            }
-            if (f.name == "subTree") {
-                f.trySetAccessible()
-                val subTree = JsonArray()
-                val nodes = f.get(node) as Array<Any>
-                for (childNode in nodes) {
-                    subTree.add(extract_tree_node(childNode))
-                }
-                json.add("subTree", subTree)
-                json.addProperty("_type", "branch")
-            }
-            if (f.name == "value") {
-                f.trySetAccessible()
-                val value = f.get(node) as RegistryEntry<Biome>
-                json.addProperty("biome", value.idAsString)
-                json.addProperty("_type", "leaf")
-            }
+            } catch (e: Exception) { /* leave empty */ }
         }
+        json.add("parameters", parameters)
+
+        // Detect leaf vs branch by presence of "value" field
+        val valueField = findField(clazz, "value")
+        if (valueField != null) {
+            // ---- LEAF NODE ----
+            json.addProperty("_type", "leaf")
+            try {
+                @Suppress("UNCHECKED_CAST")
+                val holder = valueField.get(node) as Holder<Biome>
+                val key = holder.unwrapKey().orElse(null)
+                json.addProperty("biome", key?.identifier()?.toString() ?: "unknown")
+            } catch (e: Exception) {
+                json.addProperty("biome", "unknown")
+            }
+        } else {
+            // ---- BRANCH NODE (SubTree) ----
+            json.addProperty("_type", "branch")
+            val subTree = JsonArray()
+            findField(clazz, "children")?.let { f ->
+                try {
+                    val nodes = f.get(node) as Array<*>
+                    for (child in nodes) {
+                        subTree.add(extract_tree_node(child))
+                    }
+                } catch (e: Exception) { /* leave empty */ }
+            }
+            json.add("subTree", subTree)
+        }
+
         return json
     }
 
-    fun extract_search_tree(tree: Any?): JsonObject {
-        var field: Field? = null
-        for (f: Field in tree!!::class.java.declaredFields) {
-            if (f.name == "firstNode") {
-                f.trySetAccessible()
-                field = f
-            }
-        }
+    fun extract_search_tree(parameterList: Climate.ParameterList<Holder<Biome>>): JsonObject {
+        // Force RTree construction via a dummy lookup
+        parameterList.findValue(Climate.target(0f, 0f, 0f, 0f, 0f, 0f))
 
-        return extract_tree_node(field!!.get(tree))
+        // Climate.ParameterList has field "index" of type RTree (see vanilla source)
+        val indexField = parameterList.javaClass.getDeclaredField("index")
+            .also { it.isAccessible = true }
+        val tree = indexField.get(parameterList)
+
+        // RTree has field "root" of type Node
+        val rootField = tree.javaClass.getDeclaredField("root")
+            .also { it.isAccessible = true }
+        val root = rootField.get(tree)
+
+        return extract_tree_node(root)
     }
 
-    // Only overworld and nether use multi noise sampler for biomes
     override fun extract(server: MinecraftServer): JsonElement {
-        val registryManager: DynamicRegistryManager.Immutable = server.registryManager
-        val multiNoiseRegistry: Registry<MultiNoiseBiomeSourceParameterList> =
-            registryManager.getOrThrow(RegistryKeys.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
+        val registryAccess = server.registryAccess()
+        val multiNoiseRegistry = registryAccess.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
+        val result = JsonObject()
 
-        val overworldBiomeSource =
-            MultiNoiseBiomeSource.create(multiNoiseRegistry.getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD))
+        val overworld = multiNoiseRegistry.getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD).value()
+        result.add("overworld", extract_search_tree(overworld.parameters()))
 
-        var method: Method? = null
-        for (m: Method in overworldBiomeSource::class.java.declaredMethods) {
-            if (m.name == "getBiomeEntries") {
-                m.trySetAccessible()
-                method = m
-                break
-            }
-        }
+        val nether = multiNoiseRegistry.getOrThrow(MultiNoiseBiomeSourceParameterLists.NETHER).value()
+        result.add("nether", extract_search_tree(nether.parameters()))
 
-        val overworldEntries = method!!.invoke(overworldBiomeSource) as Entries<RegistryEntry<Biome>>
-
-        var field: Field? = null
-        for (f: Field in overworldEntries::class.java.declaredFields) {
-            if (f.name == "tree") {
-                f.trySetAccessible()
-                field = f
-            }
-        }
-
-        val overworld = extract_search_tree(field!!.get(overworldEntries))
-
-        val netherBiomeSource =
-            MultiNoiseBiomeSource.create(multiNoiseRegistry.getOrThrow(MultiNoiseBiomeSourceParameterLists.NETHER))
-
-        method = null
-        for (m: Method in netherBiomeSource::class.java.declaredMethods) {
-            if (m.name == "getBiomeEntries") {
-                m.trySetAccessible()
-                method = m
-                break
-            }
-        }
-
-        val netherEntries = method!!.invoke(netherBiomeSource) as Entries<RegistryEntry<Biome>>
-
-        field = null
-        for (f: Field in netherEntries::class.java.declaredFields) {
-            if (f.name == "tree") {
-                f.trySetAccessible()
-                field = f
-            }
-        }
-
-        val nether = extract_search_tree(field!!.get(netherEntries))
-
-        val returnValue = JsonObject()
-        returnValue.add("overworld", overworld)
-        returnValue.add("nether", nether)
-        return returnValue
+        return result
     }
 
     inner class Sample : Extractor.Extractor {
-        override fun fileName(): String {
-            return "multi_noise_sample_no_blend_no_beard_0_0_0.json"
-        }
+        override fun fileName(): String = "multi_noise_sample_no_blend_no_beard_0_0_0.json"
 
         override fun extract(server: MinecraftServer): JsonElement {
             val rootJson = JsonArray()
-
             val seed = 0L
-            val chunkPos = ChunkPos(0, 0)
 
-            val lookup = BuiltinRegistries.createWrapperLookup()
-            val wrapper = lookup.getOrThrow(RegistryKeys.CHUNK_GENERATOR_SETTINGS)
-            val noiseParams = lookup.getOrThrow(RegistryKeys.NOISE_PARAMETERS)
+            val registryAccess = server.registryAccess()
+            val noiseSettings = registryAccess.lookupOrThrow(Registries.NOISE_SETTINGS)
+                .getOrThrow(NoiseGeneratorSettings.OVERWORLD)
+            val noiseParams = registryAccess.lookupOrThrow(Registries.NOISE)
 
-            val ref = wrapper.getOrThrow(ChunkGeneratorSettings.OVERWORLD)
-            val settings = ref.value()
-            val config = NoiseConfig.create(settings, noiseParams, seed)
+            val randomState = RandomState.create(noiseSettings.value(), noiseParams, seed)
+            val sampler = randomState.sampler()
 
-            // Overworld shape config
-            val shape = GenerationShapeConfig(-64, 384, 1, 2)
-            val testSampler =
-                ChunkNoiseSampler(
-                    16 / shape.horizontalCellBlockCount(), config, chunkPos.startX, chunkPos.startZ,
-                    shape, object : DensityFunctionTypes.Beardifying {
-                        override fun maxValue(): Double = 0.0
-                        override fun minValue(): Double = 0.0
-                        override fun sample(pos: NoisePos): Double = 0.0
-                        override fun fill(densities: DoubleArray, applier: EachApplier) {
-                            densities.fill(0.0)
-                        }
-                    }, settings, null, Blender.getNoBlending()
-                )
-
-            var method: KFunction<*>? = null
-            for (m: KFunction<*> in testSampler::class.declaredFunctions) {
-                if (m.name == "createMultiNoiseSampler") {
-                    method = m
-                    break
-                }
-            }
-            val sampler = method!!.call(testSampler, config.noiseRouter, listOf<NoiseHypercube>()) as MultiNoiseSampler
             for (x in 0..15) {
-                for (y in -64..319) {
+                for (y in -64..319 step 4) {
                     for (z in 0..15) {
-                        val result = sampler.sample(x, y, z)
-
-                        val valueArr = JsonArray()
-                        valueArr.add(x)
-                        valueArr.add(y)
-                        valueArr.add(z)
-
-                        valueArr.add(result.temperatureNoise)
-                        valueArr.add(result.humidityNoise)
-                        valueArr.add(result.continentalnessNoise)
-                        valueArr.add(result.erosionNoise)
-                        valueArr.add(result.depth)
-                        valueArr.add(result.weirdnessNoise)
-
-                        rootJson.add(valueArr)
+                        val res = sampler.sample(x, y, z)
+                        val arr = JsonArray()
+                        arr.add(x); arr.add(y); arr.add(z)
+                        arr.add(res.temperature())
+                        arr.add(res.humidity())
+                        arr.add(res.continentalness())
+                        arr.add(res.erosion())
+                        arr.add(res.depth())
+                        arr.add(res.weirdness())
+                        rootJson.add(arr)
                     }
                 }
             }
-
             return rootJson
         }
     }

@@ -4,27 +4,27 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
-import net.minecraft.registry.RegistryKeys
-import net.minecraft.registry.RegistryOps
+import net.minecraft.core.registries.Registries
+import net.minecraft.resources.RegistryOps
 import net.minecraft.server.MinecraftServer
-import net.minecraft.world.gen.chunk.ChunkGeneratorSettings
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings
 
 class ChunkGenSetting : Extractor.Extractor {
-    override fun fileName(): String {
-        return "chunk_gen_settings.json"
-    }
+    override fun fileName(): String = "chunk_gen_settings.json"
 
     override fun extract(server: MinecraftServer): JsonElement {
         val finalJson = JsonObject()
-        val registry =
-            server.registryManager.getOrThrow(RegistryKeys.CHUNK_GENERATOR_SETTINGS)
-        for (setting in registry) {
+
+        val registry = server.registryAccess().lookupOrThrow(Registries.NOISE_SETTINGS)
+
+        val ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE)
+
+        registry.asHolderIdMap().forEach { holder ->
+            val settings = holder.value()
+            val name = holder.unwrapKey().get().identifier() .path
             finalJson.add(
-                registry.getId(setting)!!.path,
-                ChunkGeneratorSettings.CODEC.encodeStart(
-                    RegistryOps.of(JsonOps.INSTANCE, server.registryManager),
-                    setting
-                ).getOrThrow()
+                name,
+                NoiseGeneratorSettings.DIRECT_CODEC.encodeStart(ops, settings).getOrThrow()
             )
         }
 

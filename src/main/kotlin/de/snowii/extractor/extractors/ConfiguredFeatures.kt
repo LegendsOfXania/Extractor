@@ -4,10 +4,9 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
-import net.minecraft.registry.RegistryKeys
-import net.minecraft.registry.RegistryOps
+import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
-import net.minecraft.world.gen.feature.ConfiguredFeature
+import net.minecraft.world.level.levelgen.feature.ConfiguredFeature
 
 class ConfiguredFeatures : Extractor.Extractor {
     override fun fileName(): String {
@@ -16,15 +15,23 @@ class ConfiguredFeatures : Extractor.Extractor {
 
     override fun extract(server: MinecraftServer): JsonElement {
         val finalJson = JsonObject()
-        val registry =
-            server.registryManager.getOrThrow(RegistryKeys.CONFIGURED_FEATURE)
-        for (setting in registry) {
+
+        val registry = server.registryAccess().lookupOrThrow(Registries.CONFIGURED_FEATURE)
+
+        val ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE)
+
+        registry.listElements().forEach { holder ->
+            val feature = holder.value()
+            val key = holder.key()
+
+            val json = ConfiguredFeature.DIRECT_CODEC.encodeStart(
+                ops,
+                feature
+            ).getOrThrow()
+
             finalJson.add(
-                registry.getId(setting)!!.path,
-                ConfiguredFeature.CODEC.encodeStart(
-                    RegistryOps.of(JsonOps.INSTANCE, server.registryManager),
-                    setting
-                ).getOrThrow()
+                key.identifier().path,
+                json
             )
         }
 
