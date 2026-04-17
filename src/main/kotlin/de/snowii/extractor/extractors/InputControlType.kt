@@ -1,8 +1,11 @@
 package de.snowii.extractor.extractors
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
 
@@ -12,15 +15,25 @@ class InputControlType : Extractor.Extractor {
     }
 
     override fun extract(server: MinecraftServer): JsonElement {
-        val InputControlTypeJson = JsonObject()
-        val registry =
-            server.registryAccess().lookupOrThrow(Registries.INPUT_CONTROL_TYPE)
+        val json = JsonObject()
+        val registry = BuiltInRegistries.INPUT_CONTROL_TYPE
 
-        for (inputControlType in registry.stream()) {
-            val id = registry.getId(inputControlType)
-            InputControlTypeJson.addProperty(id.toString(), registry.getId(inputControlType))
+        for (codec in registry) {
+            val key = registry.getKey(codec) ?: continue
+            val entry = JsonObject()
+            entry.addProperty("id", registry.getId(codec))
+
+            val fields = JsonArray()
+            val seen = LinkedHashSet<String>()
+            codec.keys(JsonOps.INSTANCE)
+                .map { it.asString }
+                .filter { seen.add(it) }
+                .forEach { fields.add(it) }
+            entry.add("fields", fields)
+
+            json.add(key.toString(), entry)
         }
 
-        return InputControlTypeJson
+        return json
     }
 }

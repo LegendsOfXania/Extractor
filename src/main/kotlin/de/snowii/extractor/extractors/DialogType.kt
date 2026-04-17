@@ -1,8 +1,11 @@
 package de.snowii.extractor.extractors
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import com.mojang.serialization.JsonOps
 import de.snowii.extractor.Extractor
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
 import net.minecraft.server.MinecraftServer
 
@@ -12,15 +15,25 @@ class DialogType : Extractor.Extractor {
     }
 
     override fun extract(server: MinecraftServer): JsonElement {
-        val dialogTypeJson = JsonObject()
-        val registry =
-            server.registryAccess().lookupOrThrow(Registries.DIALOG_TYPE)
+        val json = JsonObject()
+        val registry = BuiltInRegistries.DIALOG_TYPE
 
-        for (dialogType in registry.stream()) {
-            val id = registry.getId(dialogType)
-            dialogTypeJson.addProperty(id.toString(), registry.getId(dialogType))
+        for (codec in registry) {
+            val key = registry.getKey(codec) ?: continue
+            val entry = JsonObject()
+            entry.addProperty("id", registry.getId(codec))
+
+            val fields = JsonArray()
+            val seen = LinkedHashSet<String>()
+            codec.keys(JsonOps.INSTANCE)
+                .map { it.asString }
+                .filter { seen.add(it) }
+                .forEach { fields.add(it) }
+            entry.add("fields", fields)
+
+            json.add(key.toString(), entry)
         }
 
-        return dialogTypeJson
+        return json
     }
 }
